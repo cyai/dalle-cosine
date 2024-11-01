@@ -1,73 +1,44 @@
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_core.documents import Document
-from langchain_qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel
+from prompts import prompts
+from prompt_matcher import PromptMatcher
 
-from uuid import uuid4
-
-
-class PromptMatcher:
-    def __init__(
-        self,
-        collection_name="treasure_collection",
-        model_name="sentence-transformers/all-mpnet-base-v2",
-        storage_path="/tmp/langchain_qdrant",
-    ):
-        self.embeddings = HuggingFaceEmbeddings(model_name=model_name)
-
-        self.client = QdrantClient(path=storage_path)
-
-        self.collection_name = collection_name
-        self.client.create_collection(
-            collection_name=self.collection_name,
-            vectors_config=VectorParams(size=768, distance=Distance.COSINE),
-        )
-
-        self.vector_store = QdrantVectorStore(
-            client=self.client,
-            collection_name=self.collection_name,
-            embedding=self.embeddings,
-        )
-
-    def store_prompts(self, prompts):
-        documents = [
-            Document(page_content=prompt, metadata={"prompt_id": prompt_id})
-            for prompt_id, prompt in prompts.items()
-        ]
-        uuids = [str(uuid4()) for _ in range(len(documents))]
-
-        self.vector_store.add_documents(documents=documents, ids=uuids)
-
-    def match_prompt(self, user_prompt, user_prompt_id):
-        # results = self.vector_store.similarity_search(user_prompt, k=1)
-        retriever = self.vector_store.as_retriever(
-            earch_type="similarity_score_threshold",
-            search_kwargs={"score_threshold": 0.5},
-        )
-        results = retriever.invoke(input=user_prompt, k=1)
-
-        print(results)
-        if results:
-            best_match = results[0]
-
-            matched_prompt_id = best_match.metadata.get("prompt_id")
-
-            if matched_prompt_id == user_prompt_id:
-                return "Success"
-            else:
-                return "Fail"
-        return "Fail"
-
+app = FastAPI()
 
 matcher = PromptMatcher()
-
-from prompts import prompts
-
 matcher.store_prompts(prompts)
 
-user_prompt = " It will be set to `True` by default. This behavior will be depracted in transformers v4.45, and will be then set to"
-user_prompt_id = 3
 
-result = matcher.match_prompt(user_prompt, user_prompt_id)
-print(result)
+class PromptRequest(BaseModel):
+    prompt: str
+    prompt_id: int
+
+
+@app.get("/")
+def read_root():
+    return {"Hello": "World"}
+
+
+@app.get("/health")
+def read_health():
+    return {"status": "healthy"}
+
+
+@app.post("/match_prompt")
+def match_prompt(request: PromptRequest):
+    try:
+        result = matcher.match_prompt(request.prompt, request.prompt_id)
+        return {"result": result}
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal Server Error",
+        )
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)
